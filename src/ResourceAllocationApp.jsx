@@ -218,18 +218,16 @@ export default function ResourceAllocationApp() {
     setView("dashboard");
   }
 
-  async function assignPerson(projectId, assigneeName) {
+  async function assignPerson(projectId, assigneeName, recommendedOwner) {
+    // Owner = assignee for internal; top recommended team member for outsourced
+    const owner = isOutsourced(assigneeName) ? (recommendedOwner || null) : assigneeName;
     setAssignments((prev) => ({ ...prev, [projectId]: assigneeName }));
+    setOwners((prev) => ({ ...prev, [projectId]: owner }));
     await supabase.from("assignments").upsert({ project_id: projectId, assignee: assigneeName });
+    const updates = { owner };
     const proj = projects.find(p => p.id === projectId);
-    if (proj && proj.status === "Not Started") {
-      await supabase.from("projects").update({ status: "In Progress" }).eq("id", projectId);
-    }
-  }
-
-  async function setOwner(projectId, ownerName) {
-    setOwners((prev) => ({ ...prev, [projectId]: ownerName }));
-    await supabase.from("projects").update({ owner: ownerName }).eq("id", projectId);
+    if (proj && proj.status === "Not Started") updates.status = "In Progress";
+    await supabase.from("projects").update(updates).eq("id", projectId);
   }
 
   async function updateStatus(projectId, newStatus) {
@@ -312,26 +310,20 @@ export default function ResourceAllocationApp() {
           <span style={{ fontWeight: 700, color: p.color }}>{p.tierLabel} · score {p.raw}</span>
         </div>
 
-        {/* Ownership row */}
-        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", padding: "7px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#5B3FA0" }}>Owner:</span>
-            <select
-              value={owner || ""}
-              onChange={(e) => setOwner(p.id, e.target.value)}
-              style={{ fontSize: 12, padding: "3px 8px", border: "1px solid #C9BCF0", borderRadius: 5, background: "#fff", cursor: "pointer", color: owner ? C.ink : C.muted }}
-            >
-              <option value="">— assign owner —</option>
-              {TEAM_MEMBERS.map(m => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </div>
-          {owner && (
-            <span style={{ fontSize: 12, color: "#5B3FA0" }}>
-              <b>{owner}</b> is responsible for oversight
+        {/* Ownership row — read only, auto-set on assignment */}
+        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "7px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#5B3FA0" }}>Owner:</span>
+          {owner ? (
+            <>
+              <span style={{ fontSize: 12, background: "#E0D9F5", color: "#5B3FA0", padding: "2px 10px", borderRadius: 8, fontWeight: 700 }}>{owner}</span>
+              <span style={{ fontSize: 12, color: C.muted }}>
+                {chosenIsOutsourced ? "— internal oversight of outsourced delivery" : "— responsible for design delivery"}
+              </span>
+            </>
+          ) : (
+            <span style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>
+              Set automatically when project is assigned
             </span>
-          )}
-          {chosenIsOutsourced && !owner && (
-            <span style={{ fontSize: 12, color: "#A32D2D", fontWeight: 600 }}>⚠ Outsourced project needs an owner</span>
           )}
         </div>
 
@@ -406,7 +398,7 @@ export default function ResourceAllocationApp() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{r.reasons.join(" · ")}</div>
-                  <button onClick={() => assignPerson(p.id, r.name)}
+                  <button onClick={() => assignPerson(p.id, r.name, p.route.top?.name)}
                     style={{ marginTop: 5, background: chosen === r.name ? C.navy : "transparent", color: chosen === r.name ? "#fff" : C.navy, border: `1px solid ${C.navy}`, borderRadius: 5, padding: "3px 11px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
                     {chosen === r.name ? "Assigned ✓" : "Assign"}
                   </button>
@@ -418,7 +410,7 @@ export default function ResourceAllocationApp() {
                 <div style={{ fontSize: 12, fontWeight: 600, color: OUTSOURCE_STYLE.color, marginBottom: 6 }}>Outsource to external team</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {OUTSOURCE_TEAMS.map(ot => (
-                    <button key={ot} onClick={() => assignPerson(p.id, ot)}
+                    <button key={ot} onClick={() => assignPerson(p.id, ot, p.route.top?.name)}
                       style={{ background: chosen === ot ? OUTSOURCE_STYLE.color : "transparent", color: chosen === ot ? "#fff" : OUTSOURCE_STYLE.color, border: `1px solid ${OUTSOURCE_STYLE.color}`, borderRadius: 5, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
                       {chosen === ot ? `${ot} ✓` : ot}
                     </button>
