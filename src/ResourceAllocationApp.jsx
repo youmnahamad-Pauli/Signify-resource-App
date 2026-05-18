@@ -34,6 +34,14 @@ const FIELD = {
   phase: ["Specification", "Construction"],
 };
 
+const STATUS_OPTIONS = ["Not Started", "In Progress", "Completed"];
+
+const STATUS_STYLE = {
+  "Not Started": { bg: "#f0f0f0", color: "#5f5f5f" },
+  "In Progress": { bg: "#E6F1FB", color: "#0C447C" },
+  "Completed":   { bg: "#E8F5E0", color: "#3B6D11" },
+};
+
 function scoreProject(p) {
   const raw = (URGENCY[p.urgency] || 0) + (COMPLEXITY[p.complexity] || 0) + (SIZE[p.size] || 0) + (p.iconic ? 25 : 0);
   let tier, tierLabel, color;
@@ -96,6 +104,8 @@ export default function ResourceAllocationApp() {
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState("dashboard");
   const [expanded, setExpanded] = useState(null);
+  const [completingId, setCompletingId] = useState(null);
+  const [actualHrsInput, setActualHrsInput] = useState("");
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -138,9 +148,11 @@ export default function ResourceAllocationApp() {
     };
   }, [fetchData]);
 
+  // Only active (non-completed) assigned projects consume team capacity
   const committedExtra = useMemo(() => {
     const m = {};
     for (const p of projects) {
+      if (p.status === "Completed") continue;
       const who = assignments[p.id];
       if (who) m[who] = (m[who] || 0) + Number(p.hrs || 0);
     }
@@ -155,12 +167,23 @@ export default function ResourceAllocationApp() {
     [projects, team, committedExtra]
   );
 
-  const stats = useMemo(() => ({
-    open: scored.length,
-    tier1: scored.filter((p) => p.tier === 1).length,
-    totalHrs: scored.reduce((a, p) => a + Number(p.hrs || 0), 0),
-    assigned: Object.keys(assignments).length,
-  }), [scored, assignments]);
+  const stats = useMemo(() => {
+    const active = scored.filter((p) => p.status !== "Completed");
+    const completed = scored.filter((p) => p.status === "Completed");
+    const totalEstimated = completed.reduce((a, p) => a + Number(p.hrs || 0), 0);
+    const totalActual = completed.reduce((a, p) => a + Number(p.actual_hrs || 0), 0);
+    return {
+      open: active.length,
+      tier1: active.filter((p) => p.tier === 1).length,
+      totalHrs: active.reduce((a, p) => a + Number(p.hrs || 0), 0),
+      assigned: Object.keys(assignments).filter(id => {
+        const p = projects.find(x => x.id === id);
+        return p && p.status !== "Completed";
+      }).length,
+      completed: completed.length,
+      accuracy: totalEstimated > 0 ? Math.round((totalActual / totalEstimated) * 100) : null,
+    };
+  }, [scored, assignments, projects]);
 
   async function addProject() {
     if (!form.name.trim()) return;
@@ -170,6 +193,7 @@ export default function ResourceAllocationApp() {
       id: nextId, name: form.name, phase: form.phase, segment: form.segment,
       size: form.size, complexity: form.complexity, iconic: form.iconic,
       urgency: form.urgency, repetitive: form.repetitive, hrs: Number(form.hrs),
+      status: "Not Started",
     });
     setForm({ ...form, name: "" });
     setSaving(false);
@@ -179,6 +203,31 @@ export default function ResourceAllocationApp() {
   async function assignPerson(projectId, personName) {
     setAssignments((prev) => ({ ...prev, [projectId]: personName }));
     await supabase.from("assignments").upsert({ project_id: projectId, assignee: personName });
+    // Auto-set to In Progress when assigned
+    const proj = projects.find(p => p.id === projectId);
+    if (proj && proj.status === "Not Started") {
+      await supabase.from("projects").update({ status: "In Progress" }).eq("id", projectId);
+    }
+  }
+
+  async function updateStatus(projectId, newStatus) {
+    if (newStatus === "Completed") {
+      setCompletingId(projectId);
+      setActualHrsInput("");
+      return;
+    }
+    await supabase.from("projects").update({ status: newStatus }).eq("id", projectId);
+  }
+
+  async function submitCompletion(projectId) {
+    const actual = Number(actualHrsInput);
+    if (!actual || actual <= 0) return;
+    await supabase.from("projects").update({
+      status: "Completed",
+      actual_hrs: actual,
+    }).eq("id", projectId);
+    setCompletingId(null);
+    setActualHrsInput("");
   }
 
   function startEdit(member) {
@@ -202,6 +251,9 @@ export default function ResourceAllocationApp() {
   const inputStyle = { width: "100%", padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 6, fontSize: 14, boxSizing: "border-box" };
   const barColor = (v) => (v >= 70 ? "#3B6D11" : v >= 45 ? "#854F0B" : "#A32D2D");
 
+  const activeProjects = scored.filter(p => p.status !== "Completed").sort((a, b) => b.raw - a.raw);
+  const completedProjects = scored.filter(p => p.status === "Completed").sort((a, b) => b.raw - a.raw);
+
   return (
     <div style={wrap}>
       <div style={{ background: C.navy, color: "#fff", padding: "20px 28px" }}>
@@ -215,6 +267,9 @@ export default function ResourceAllocationApp() {
         <button style={tabStyle(view === "dashboard")} onClick={() => setView("dashboard")}>Dashboard</button>
         <button style={tabStyle(view === "intake")} onClick={() => setView("intake")}>New Project Intake</button>
         <button style={tabStyle(view === "team")} onClick={() => setView("team")}>Team Capacity</button>
+        <button style={tabStyle(view === "completed")} onClick={() => setView("completed")}>
+          Completed {stats.completed > 0 && `(${stats.completed})`}
+        </button>
       </div>
 
       <div style={{ padding: "22px 28px", maxWidth: 1000, margin: "0 auto" }}>
@@ -225,34 +280,85 @@ export default function ResourceAllocationApp() {
             {view === "dashboard" && (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
-                  {[["Open projects", stats.open], ["Tier 1 — Critical", stats.tier1], ["Assigned", stats.assigned + " / " + stats.open], ["Pipeline hours", stats.totalHrs + " h"]].map(([k, v]) => (
+                  {[
+                    ["Active projects", stats.open],
+                    ["Tier 1 — Critical", stats.tier1],
+                    ["Assigned", stats.assigned + " / " + stats.open],
+                    ["Pipeline hours", stats.totalHrs + " h"],
+                  ].map(([k, v]) => (
                     <div key={k} style={{ ...card, padding: 14 }}>
                       <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
                       <div style={{ fontSize: 26, fontWeight: 700, color: C.navy, marginTop: 4 }}>{v}</div>
                     </div>
                   ))}
                 </div>
+
                 <div style={card}>
-                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: C.navy }}>Triaged Projects — with smart recommendations</div>
-                  {scored.length === 0 ? (
-                    <div style={{ color: C.muted, textAlign: "center", padding: 40 }}>No projects yet — add one via New Project Intake.</div>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: C.navy }}>Active Projects</div>
+                  {activeProjects.length === 0 ? (
+                    <div style={{ color: C.muted, textAlign: "center", padding: 40 }}>No active projects — add one via New Project Intake.</div>
                   ) : (
                     <div style={{ display: "grid", gap: 10 }}>
-                      {scored.slice().sort((a, b) => b.raw - a.raw).map((p) => {
+                      {activeProjects.map((p) => {
                         const open = expanded === p.id;
                         const chosen = assignments[p.id];
+                        const st = STATUS_STYLE[p.status] || STATUS_STYLE["Not Started"];
+                        const isCompleting = completingId === p.id;
                         return (
                           <div key={p.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "12px 14px", borderLeft: `5px solid ${p.color}` }}>
                             <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                              <div>
-                                <b>{p.id}</b><span style={{ marginLeft: 8 }}>{p.name}</span>
-                                {p.iconic && <span style={{ marginLeft: 8, fontSize: 11, background: "#FAEEDA", color: "#854F0B", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>ICONIC</span>}
+                              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                                <b>{p.id}</b>
+                                <span>{p.name}</span>
+                                {p.iconic && <span style={{ fontSize: 11, background: "#FAEEDA", color: "#854F0B", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>ICONIC</span>}
                               </div>
-                              <div style={{ fontWeight: 700, color: p.color }}>{p.tierLabel} · score {p.raw}</div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 12, background: st.bg, color: st.color, padding: "3px 10px", borderRadius: 10, fontWeight: 600 }}>{p.status}</span>
+                                <select
+                                  value={p.status}
+                                  onChange={(e) => updateStatus(p.id, e.target.value)}
+                                  style={{ fontSize: 12, padding: "3px 6px", border: `1px solid ${C.line}`, borderRadius: 5, cursor: "pointer" }}
+                                >
+                                  {STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
+                                </select>
+                              </div>
                             </div>
+
                             <div style={{ fontSize: 13, color: C.muted, marginTop: 6, display: "flex", flexWrap: "wrap", gap: 14 }}>
-                              <span>{p.segment} · {p.phase}</span><span>{p.size} · {p.complexity}</span><span>{p.urgency}</span><span>~{p.hrs} h</span>
+                              <span>{p.segment} · {p.phase}</span>
+                              <span>{p.size} · {p.complexity}</span>
+                              <span>{p.urgency}</span>
+                              <span style={{ fontWeight: 600 }}>Est. {p.hrs} h</span>
+                              <span style={{ fontWeight: 700, color: p.color }}>{p.tierLabel} · score {p.raw}</span>
                             </div>
+
+                            {/* Completion feedback form */}
+                            {isCompleting && (
+                              <div style={{ marginTop: 10, background: "#E8F5E0", border: "1px solid #b6d9a0", borderRadius: 8, padding: 12 }}>
+                                <div style={{ fontWeight: 600, color: "#3B6D11", marginBottom: 6 }}>Mark as Completed — enter actual hours</div>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <input
+                                    type="number"
+                                    placeholder="Actual hours"
+                                    value={actualHrsInput}
+                                    onChange={(e) => setActualHrsInput(e.target.value)}
+                                    style={{ width: 140, padding: "7px 10px", border: `1px solid #b6d9a0`, borderRadius: 6, fontSize: 14 }}
+                                  />
+                                  <button onClick={() => submitCompletion(p.id)}
+                                    style={{ background: "#3B6D11", color: "#fff", border: "none", borderRadius: 6, padding: "7px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                                    Confirm Complete
+                                  </button>
+                                  <button onClick={() => setCompletingId(null)}
+                                    style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "7px 12px", fontSize: 13, cursor: "pointer" }}>
+                                    Cancel
+                                  </button>
+                                </div>
+                                <div style={{ fontSize: 12, color: "#3B6D11", marginTop: 4 }}>
+                                  Estimated: {p.hrs} h — {Number(actualHrsInput) > 0 ? (Number(actualHrsInput) > p.hrs ? `+${Number(actualHrsInput) - p.hrs} h over estimate` : `-${p.hrs - Number(actualHrsInput)} h under estimate`) : "enter actual hours above"}
+                                </div>
+                              </div>
+                            )}
+
                             <div style={{ marginTop: 8, padding: "8px 10px", background: C.bg, borderRadius: 6, fontSize: 13 }}>
                               {p.route.top ? (
                                 <>
@@ -263,9 +369,12 @@ export default function ResourceAllocationApp() {
                                   <div style={{ color: C.muted, marginTop: 3 }}>{p.route.pathNote}</div>
                                 </>
                               ) : <span style={{ color: "#A32D2D" }}>{p.route.pathNote}</span>}
-                              <button onClick={() => setExpanded(open ? null : p.id)} style={{ marginTop: 6, background: "none", border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 9px", fontSize: 12, cursor: "pointer", color: C.navy }}>
+
+                              <button onClick={() => setExpanded(open ? null : p.id)}
+                                style={{ marginTop: 6, background: "none", border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 9px", fontSize: 12, cursor: "pointer", color: C.navy }}>
                                 {open ? "Hide ranking" : "Why? See full ranking"}
                               </button>
+
                               {open && (
                                 <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
                                   {p.route.ranked.map((r, i) => (
@@ -297,6 +406,55 @@ export default function ResourceAllocationApp() {
                   )}
                 </div>
               </>
+            )}
+
+            {view === "completed" && (
+              <div style={card}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: C.navy }}>Completed Projects</div>
+                  {stats.accuracy !== null && (
+                    <div style={{ fontSize: 13, color: C.muted }}>
+                      Estimation accuracy: <b style={{ color: stats.accuracy <= 110 && stats.accuracy >= 90 ? "#3B6D11" : "#A32D2D" }}>{stats.accuracy}%</b>
+                      <span style={{ fontSize: 11, marginLeft: 4 }}>(actual / estimated)</span>
+                    </div>
+                  )}
+                </div>
+                {completedProjects.length === 0 ? (
+                  <div style={{ color: C.muted, textAlign: "center", padding: 40 }}>No completed projects yet.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {completedProjects.map((p) => {
+                      const chosen = assignments[p.id];
+                      const diff = p.actual_hrs - p.hrs;
+                      const diffColor = diff > 0 ? "#A32D2D" : "#3B6D11";
+                      return (
+                        <div key={p.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "12px 14px", borderLeft: "5px solid #3B6D11", opacity: 0.9 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <b>{p.id}</b>
+                              <span>{p.name}</span>
+                              {p.iconic && <span style={{ fontSize: 11, background: "#FAEEDA", color: "#854F0B", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>ICONIC</span>}
+                              <span style={{ fontSize: 11, background: "#E8F5E0", color: "#3B6D11", padding: "2px 8px", borderRadius: 10, fontWeight: 600 }}>COMPLETED</span>
+                            </div>
+                            <div style={{ fontSize: 13, color: C.muted }}>{p.segment} · {p.phase}</div>
+                          </div>
+                          <div style={{ marginTop: 8, display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13 }}>
+                            <span>Assigned: <b>{chosen || "—"}</b></span>
+                            <span>Estimated: <b>{p.hrs} h</b></span>
+                            <span>Actual: <b>{p.actual_hrs} h</b></span>
+                            <span style={{ color: diffColor, fontWeight: 600 }}>
+                              {diff > 0 ? `+${diff} h over` : `${Math.abs(diff)} h under`} estimate
+                            </span>
+                          </div>
+                          <div style={{ marginTop: 6, height: 6, background: "#eee", borderRadius: 4, overflow: "hidden", maxWidth: 300 }}>
+                            <div style={{ width: Math.min((p.actual_hrs / p.hrs) * 100, 150) + "%", height: "100%", background: diff > 0 ? "#A32D2D" : "#3B6D11" }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
 
             {view === "intake" && (
@@ -351,7 +509,7 @@ export default function ResourceAllocationApp() {
               <div style={card}>
                 <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: C.navy }}>Team Capacity</div>
                 <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
-                  Click <b>Edit</b> on any member to update their base or committed hours — changes save instantly for everyone.
+                  Live — completed projects automatically free up capacity. Click <b>Edit</b> to update base or committed hours.
                 </div>
                 <div style={{ display: "grid", gap: 10 }}>
                   {team.map((t) => {
@@ -376,18 +534,15 @@ export default function ResourceAllocationApp() {
                             )}
                           </div>
                         </div>
-
                         {isEditing ? (
                           <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                             <div>
                               <label style={labelStyle}>Base hours / week</label>
-                              <input type="number" style={inputStyle} value={editForm.base}
-                                onChange={(e) => setEditForm({ ...editForm, base: e.target.value })} />
+                              <input type="number" style={inputStyle} value={editForm.base} onChange={(e) => setEditForm({ ...editForm, base: e.target.value })} />
                             </div>
                             <div>
                               <label style={labelStyle}>Committed hours</label>
-                              <input type="number" style={inputStyle} value={editForm.committed}
-                                onChange={(e) => setEditForm({ ...editForm, committed: e.target.value })} />
+                              <input type="number" style={inputStyle} value={editForm.committed} onChange={(e) => setEditForm({ ...editForm, committed: e.target.value })} />
                             </div>
                             <div style={{ display: "flex", gap: 8, gridColumn: "span 2" }}>
                               <button onClick={() => saveEdit(t.name)}
@@ -408,7 +563,7 @@ export default function ResourceAllocationApp() {
                               </div>
                               <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
                                 {liveCommitted} h committed · {avail} h available of {t.base} h base
-                                {committedExtra[t.name] ? ` (+${committedExtra[t.name]} h from assignments)` : ""}
+                                {committedExtra[t.name] ? ` (+${committedExtra[t.name]} h from active assignments)` : ""}
                               </div>
                             </>
                           )
