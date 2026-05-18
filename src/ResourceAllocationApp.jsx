@@ -26,17 +26,6 @@ const SEGMENT_OUTSOURCE = {
   Tunnel: "Partner only after technical gate",
 };
 
-const INITIAL_TEAM = [
-  { name: "Tatiana", role: "Senior lighting designer", base: 32, committed: 22, skill: 1.0, iconic: true },
-  { name: "Inna", role: "Senior lighting designer", base: 30, committed: 20, skill: 1.0, iconic: true },
-  { name: "Vivek", role: "Lighting designer", base: 28, committed: 16, skill: 0.85, iconic: false },
-  { name: "Vikash", role: "Project manager (unavailable)", base: 0, committed: 0, skill: 0, iconic: false },
-  { name: "Farhan", role: "Specifier relations + tunnel", base: 10, committed: 6, skill: 0.8, iconic: false },
-  { name: "Nour", role: "Intern / creative support", base: 20, committed: 10, skill: 0.45, iconic: false },
-  { name: "Karim", role: "Specifier relations + road", base: 12, committed: 7, skill: 0.55, iconic: false },
-  { name: "Manager Reserve", role: "Strategic reserve / QA", base: 8, committed: 4, skill: 1.0, iconic: true },
-];
-
 const FIELD = {
   segment: Object.keys(SEGMENT_FIT),
   size: Object.keys(SIZE),
@@ -58,40 +47,29 @@ function recommendPeople(p, team, committedExtra) {
   const fitMap = SEGMENT_FIT[p.segment] || {};
   const highComplexity = p.complexity === "High";
   const results = [];
-
   for (const t of team) {
     if (t.base === 0) continue;
     const fit = fitMap[t.name];
     if (fit === undefined) continue;
-
     const liveCommitted = t.committed + (committedExtra[t.name] || 0);
     const available = t.base - liveCommitted;
     const headroom = Math.max(0, Math.min(1, available / Math.max(p.hrs, 1)));
-
     const reasons = [];
     const capacityScore = headroom;
     if (available <= 0) reasons.push("No spare capacity");
     else if (available < p.hrs) reasons.push(`Only ${available}h free vs ${p.hrs}h needed`);
     else reasons.push(`${available}h free — fits the ${p.hrs}h job`);
-
     const fitScore = fit;
     reasons.push(fit >= 0.9 ? "Primary segment owner" : fit >= 0.6 ? "Credible backup for this segment" : "Support-level segment fit");
-
     let skillScore = t.skill;
     if (highComplexity && t.skill < 0.8) { skillScore *= 0.5; reasons.push("High-complexity job — below senior skill"); }
     else if (highComplexity) reasons.push("Senior skill suits high complexity");
-
     let iconicScore = 1;
     if (p.iconic && !t.iconic) { iconicScore = 0.4; reasons.push("Iconic project — not iconic-certified"); }
     else if (p.iconic) reasons.push("Iconic-certified");
-
-    const total = Math.round(
-      (capacityScore * 0.35 + fitScore * 0.30 + skillScore * 0.20 + iconicScore * 0.15) * 100
-    );
-
+    const total = Math.round((capacityScore * 0.35 + fitScore * 0.30 + skillScore * 0.20 + iconicScore * 0.15) * 100);
     results.push({ name: t.name, role: t.role, total, available, reasons });
   }
-
   results.sort((a, b) => b.total - a.total);
   return results;
 }
@@ -111,13 +89,15 @@ function bestRoute(p, team, committedExtra) {
 }
 
 export default function ResourceAllocationApp() {
-  const [team] = useState(INITIAL_TEAM);
+  const [team, setTeam] = useState([]);
   const [projects, setProjects] = useState([]);
   const [assignments, setAssignments] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState("dashboard");
   const [expanded, setExpanded] = useState(null);
+  const [editingMember, setEditingMember] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
     name: "", phase: "Specification", segment: "Road", size: "Medium",
     complexity: "Medium", iconic: false, urgency: "Specification - Normal",
@@ -125,9 +105,10 @@ export default function ResourceAllocationApp() {
   });
 
   const fetchData = useCallback(async () => {
-    const [{ data: proj }, { data: asgn }] = await Promise.all([
+    const [{ data: proj }, { data: asgn }, { data: tm }] = await Promise.all([
       supabase.from("projects").select("*").order("created_at", { ascending: true }),
       supabase.from("assignments").select("*"),
+      supabase.from("team").select("*"),
     ]);
     if (proj) setProjects(proj);
     if (asgn) {
@@ -135,25 +116,25 @@ export default function ResourceAllocationApp() {
       for (const a of asgn) map[a.project_id] = a.assignee;
       setAssignments(map);
     }
+    if (tm) setTeam(tm);
     setLoading(false);
   }, []);
 
   useEffect(() => {
     fetchData();
-
-    const projSub = supabase
-      .channel("projects-channel")
+    const projSub = supabase.channel("projects-channel")
       .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, fetchData)
       .subscribe();
-
-    const asgnSub = supabase
-      .channel("assignments-channel")
+    const asgnSub = supabase.channel("assignments-channel")
       .on("postgres_changes", { event: "*", schema: "public", table: "assignments" }, fetchData)
       .subscribe();
-
+    const teamSub = supabase.channel("team-channel")
+      .on("postgres_changes", { event: "*", schema: "public", table: "team" }, fetchData)
+      .subscribe();
     return () => {
       supabase.removeChannel(projSub);
       supabase.removeChannel(asgnSub);
+      supabase.removeChannel(teamSub);
     };
   }, [fetchData]);
 
@@ -186,16 +167,9 @@ export default function ResourceAllocationApp() {
     setSaving(true);
     const nextId = "P-" + String(projects.length + 1).padStart(3, "0");
     await supabase.from("projects").insert({
-      id: nextId,
-      name: form.name,
-      phase: form.phase,
-      segment: form.segment,
-      size: form.size,
-      complexity: form.complexity,
-      iconic: form.iconic,
-      urgency: form.urgency,
-      repetitive: form.repetitive,
-      hrs: Number(form.hrs),
+      id: nextId, name: form.name, phase: form.phase, segment: form.segment,
+      size: form.size, complexity: form.complexity, iconic: form.iconic,
+      urgency: form.urgency, repetitive: form.repetitive, hrs: Number(form.hrs),
     });
     setForm({ ...form, name: "" });
     setSaving(false);
@@ -205,6 +179,19 @@ export default function ResourceAllocationApp() {
   async function assignPerson(projectId, personName) {
     setAssignments((prev) => ({ ...prev, [projectId]: personName }));
     await supabase.from("assignments").upsert({ project_id: projectId, assignee: personName });
+  }
+
+  function startEdit(member) {
+    setEditingMember(member.name);
+    setEditForm({ base: member.base, committed: member.committed });
+  }
+
+  async function saveEdit(memberName) {
+    await supabase.from("team").update({
+      base: Number(editForm.base),
+      committed: Number(editForm.committed),
+    }).eq("name", memberName);
+    setEditingMember(null);
   }
 
   const C = { navy: "#1F3864", accent: "#2E75B6", ink: "#1a1a1a", muted: "#5f5f5f", line: "#e3e3e3", bg: "#f7f8fa", card: "#fff" };
@@ -232,7 +219,7 @@ export default function ResourceAllocationApp() {
 
       <div style={{ padding: "22px 28px", maxWidth: 1000, margin: "0 auto" }}>
         {loading ? (
-          <div style={{ textAlign: "center", padding: 60, color: C.muted, fontSize: 15 }}>Loading projects…</div>
+          <div style={{ textAlign: "center", padding: 60, color: C.muted, fontSize: 15 }}>Loading…</div>
         ) : (
           <>
             {view === "dashboard" && (
@@ -245,7 +232,6 @@ export default function ResourceAllocationApp() {
                     </div>
                   ))}
                 </div>
-
                 <div style={card}>
                   <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: C.navy }}>Triaged Projects — with smart recommendations</div>
                   {scored.length === 0 ? (
@@ -267,7 +253,6 @@ export default function ResourceAllocationApp() {
                             <div style={{ fontSize: 13, color: C.muted, marginTop: 6, display: "flex", flexWrap: "wrap", gap: 14 }}>
                               <span>{p.segment} · {p.phase}</span><span>{p.size} · {p.complexity}</span><span>{p.urgency}</span><span>~{p.hrs} h</span>
                             </div>
-
                             <div style={{ marginTop: 8, padding: "8px 10px", background: C.bg, borderRadius: 6, fontSize: 13 }}>
                               {p.route.top ? (
                                 <>
@@ -281,7 +266,6 @@ export default function ResourceAllocationApp() {
                               <button onClick={() => setExpanded(open ? null : p.id)} style={{ marginTop: 6, background: "none", border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 9px", fontSize: 12, cursor: "pointer", color: C.navy }}>
                                 {open ? "Hide ranking" : "Why? See full ranking"}
                               </button>
-
                               {open && (
                                 <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
                                   {p.route.ranked.map((r, i) => (
@@ -367,7 +351,7 @@ export default function ResourceAllocationApp() {
               <div style={card}>
                 <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4, color: C.navy }}>Team Capacity</div>
                 <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
-                  Live — includes hours locked in by assignments made on the dashboard.
+                  Click <b>Edit</b> on any member to update their base or committed hours — changes save instantly for everyone.
                 </div>
                 <div style={{ display: "grid", gap: 10 }}>
                   {team.map((t) => {
@@ -375,24 +359,59 @@ export default function ResourceAllocationApp() {
                     const util = t.base === 0 ? 0 : Math.round((liveCommitted / t.base) * 100);
                     const avail = t.base - liveCommitted;
                     const col = util >= 90 ? "#A32D2D" : util >= 70 ? "#854F0B" : "#3B6D11";
+                    const isEditing = editingMember === t.name;
                     return (
                       <div key={t.name} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 14px" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <div><b>{t.name}</b> <span style={{ color: C.muted, fontSize: 13 }}>· {t.role}</span></div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: t.base === 0 ? C.muted : col }}>
-                            {t.base === 0 ? "unavailable" : util + "% utilised"}
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: t.base === 0 ? C.muted : col }}>
+                              {t.base === 0 ? "unavailable" : util + "% utilised"}
+                            </div>
+                            {!isEditing && (
+                              <button onClick={() => startEdit(t)}
+                                style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 5, padding: "3px 10px", fontSize: 12, cursor: "pointer", color: C.navy }}>
+                                Edit
+                              </button>
+                            )}
                           </div>
                         </div>
-                        {t.base > 0 && (
-                          <>
-                            <div style={{ height: 8, background: "#eee", borderRadius: 4, marginTop: 6, overflow: "hidden" }}>
-                              <div style={{ width: Math.min(util, 100) + "%", height: "100%", background: col }} />
+
+                        {isEditing ? (
+                          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            <div>
+                              <label style={labelStyle}>Base hours / week</label>
+                              <input type="number" style={inputStyle} value={editForm.base}
+                                onChange={(e) => setEditForm({ ...editForm, base: e.target.value })} />
                             </div>
-                            <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-                              {liveCommitted} h committed · {avail} h available of {t.base} h base
-                              {committedExtra[t.name] ? ` (+${committedExtra[t.name]} h from new assignments)` : ""}
+                            <div>
+                              <label style={labelStyle}>Committed hours</label>
+                              <input type="number" style={inputStyle} value={editForm.committed}
+                                onChange={(e) => setEditForm({ ...editForm, committed: e.target.value })} />
                             </div>
-                          </>
+                            <div style={{ display: "flex", gap: 8, gridColumn: "span 2" }}>
+                              <button onClick={() => saveEdit(t.name)}
+                                style={{ background: C.navy, color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px", fontSize: 13, cursor: "pointer", fontWeight: 600 }}>
+                                Save
+                              </button>
+                              <button onClick={() => setEditingMember(null)}
+                                style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 5, padding: "6px 14px", fontSize: 13, cursor: "pointer" }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          t.base > 0 && (
+                            <>
+                              <div style={{ height: 8, background: "#eee", borderRadius: 4, marginTop: 6, overflow: "hidden" }}>
+                                <div style={{ width: Math.min(util, 100) + "%", height: "100%", background: col }} />
+                              </div>
+                              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
+                                {liveCommitted} h committed · {avail} h available of {t.base} h base
+                                {committedExtra[t.name] ? ` (+${committedExtra[t.name]} h from assignments)` : ""}
+                              </div>
+                            </>
+                          )
                         )}
                       </div>
                     );
