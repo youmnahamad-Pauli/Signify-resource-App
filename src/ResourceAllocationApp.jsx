@@ -653,7 +653,7 @@ export default function ResourceAllocationApp() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, padding: "14px 28px", background: "#fff", borderBottom: `1px solid ${C.line}` }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "14px 28px", background: "#fff", borderBottom: `1px solid ${C.line}` }}>
         <button style={tabStyle(view === "dashboard")} onClick={() => setView("dashboard")}>Dashboard</button>
         <button style={tabStyle(view === "intake")} onClick={() => setView("intake")}>New Project Intake</button>
         <button style={tabStyle(view === "team")} onClick={() => setView("team")}>Team Capacity</button>
