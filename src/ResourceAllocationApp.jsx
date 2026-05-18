@@ -98,12 +98,44 @@ function bestRoute(p, team, committedExtra) {
   const top = ranked[0];
   let pathNote;
   if (!top) pathNote = "No eligible internal owner — escalate to manager.";
+  else if (p.iconic) pathNote = "Iconic project — must stay internal. Cannot be outsourced.";
   else if (top.total < 45 || (top.available <= 0 && sc.tier !== 1))
     pathNote = `Internal capacity tight — consider outsourcing to: ${SEGMENT_OUTSOURCE[p.segment] || "external support"}.`;
   else if (sc.tier === 1) pathNote = "Tier 1 — keep local, senior QA mandatory.";
   else if (sc.tier === 2 && p.repetitive) pathNote = `Local setup, then outsource to: ${SEGMENT_OUTSOURCE[p.segment]}.`;
   else pathNote = "Local production; partner only on overflow.";
   return { sc, ranked, top, pathNote };
+}
+
+// For iconic projects with insufficient capacity: find which active non-iconic project
+// assigned to the recommended person can be moved out to free up space.
+function getRebalancingSuggestion(p, projects, assignments) {
+  if (!p.iconic) return null;
+  const top = p.route?.top;
+  if (!top) return null;
+  if (top.available >= p.hrs) return null; // enough room — no rebalancing needed
+
+  const hoursNeeded = p.hrs - top.available;
+
+  const candidates = projects.filter(proj =>
+    proj.status !== "Completed" &&
+    !proj.iconic &&
+    assignments[proj.id] === top.name &&
+    proj.id !== p.id &&
+    SEGMENT_OUTSOURCE[proj.segment]
+  );
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => b.hrs - a.hrs);
+  const pick = candidates.find(proj => proj.hrs >= hoursNeeded) || candidates[0];
+
+  return {
+    person: top.name,
+    project: pick,
+    suggestedTeam: SEGMENT_OUTSOURCE[pick.segment],
+    hoursFreed: pick.hrs,
+    hoursNeeded,
+  };
 }
 
 export default function ResourceAllocationApp() {
@@ -282,6 +314,7 @@ export default function ResourceAllocationApp() {
     const st = STATUS_STYLE[p.status] || STATUS_STYLE["Not Started"];
     const isCompleting = completingId === p.id;
     const chosenIsOutsourced = isOutsourced(chosen);
+    const rebalance = getRebalancingSuggestion(p, projects, assignments);
 
     return (
       <div key={p.id} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "12px 14px", borderLeft: `5px solid ${p.color}` }}>
@@ -326,6 +359,28 @@ export default function ResourceAllocationApp() {
             </span>
           )}
         </div>
+
+        {/* Rebalancing alert — iconic projects with insufficient capacity */}
+        {rebalance && !chosen && (
+          <div style={{ marginTop: 8, background: "#FFF8E1", border: "1px solid #F9A825", borderRadius: 8, padding: 12 }}>
+            <div style={{ fontWeight: 700, color: "#7B5E00", fontSize: 13, marginBottom: 4 }}>
+              Iconic project — cannot be outsourced
+            </div>
+            <div style={{ fontSize: 13, color: "#5C4200", marginBottom: 8 }}>
+              <b>{rebalance.person}</b> needs <b>{rebalance.hoursNeeded} h</b> freed up to take this on.
+              Suggested: move <b>{rebalance.project.name}</b> ({rebalance.project.hrs} h, non-iconic)
+              to <b>{rebalance.suggestedTeam}</b>.
+            </div>
+            <button
+              onClick={() => assignPerson(rebalance.project.id, rebalance.suggestedTeam, rebalance.person)}
+              style={{ background: "#F9A825", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              Apply — move {rebalance.project.id} to {rebalance.suggestedTeam}
+            </button>
+            <div style={{ fontSize: 11, color: "#7B5E00", marginTop: 5 }}>
+              This frees {rebalance.hoursFreed} h from {rebalance.person}, making room for this iconic project.
+            </div>
+          </div>
+        )}
 
         {/* Completion form */}
         {isCompleting && (
@@ -405,21 +460,29 @@ export default function ResourceAllocationApp() {
                 </div>
               ))}
 
-              {/* Outsource team options */}
-              <div style={{ marginTop: 4, padding: "8px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: OUTSOURCE_STYLE.color, marginBottom: 6 }}>Outsource to external team</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {OUTSOURCE_TEAMS.map(ot => (
-                    <button key={ot} onClick={() => assignPerson(p.id, ot, p.route.top?.name)}
-                      style={{ background: chosen === ot ? OUTSOURCE_STYLE.color : "transparent", color: chosen === ot ? "#fff" : OUTSOURCE_STYLE.color, border: `1px solid ${OUTSOURCE_STYLE.color}`, borderRadius: 5, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
-                      {chosen === ot ? `${ot} ✓` : ot}
-                    </button>
-                  ))}
+              {/* Outsource team options — blocked for iconic projects */}
+              {p.iconic ? (
+                <div style={{ marginTop: 4, padding: "8px 10px", background: "#FFF8E1", borderRadius: 6, border: "1px solid #F9A825" }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#7B5E00" }}>
+                    Outsourcing not allowed — iconic project must stay internal
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 5 }}>
-                  Suggested for this segment: <b style={{ color: OUTSOURCE_STYLE.color }}>{SEGMENT_OUTSOURCE[p.segment]}</b>
+              ) : (
+                <div style={{ marginTop: 4, padding: "8px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: OUTSOURCE_STYLE.color, marginBottom: 6 }}>Outsource to external team</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {OUTSOURCE_TEAMS.map(ot => (
+                      <button key={ot} onClick={() => assignPerson(p.id, ot, p.route.top?.name)}
+                        style={{ background: chosen === ot ? OUTSOURCE_STYLE.color : "transparent", color: chosen === ot ? "#fff" : OUTSOURCE_STYLE.color, border: `1px solid ${OUTSOURCE_STYLE.color}`, borderRadius: 5, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+                        {chosen === ot ? `${ot} ✓` : ot}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 5 }}>
+                    Suggested for this segment: <b style={{ color: OUTSOURCE_STYLE.color }}>{SEGMENT_OUTSOURCE[p.segment]}</b>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
         </div>
