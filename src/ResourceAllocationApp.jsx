@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
+import { exportToExcel } from "./exportToExcel";
 
 const URGENCY = {
   "Specification - Fast": 50,
@@ -154,6 +155,7 @@ export default function ResourceAllocationApp() {
   const [calMonth, setCalMonth] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   // overloadFlow: null | { step, newProjectId, newProjectName, newProjectHrs, targetPerson, theirProjects, pickedProjectId?, pickedProjectName?, newAssignee? }
   const [overloadFlow, setOverloadFlow] = useState(null);
+  const [exportLoading, setExportLoading] = useState(false);
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -659,6 +661,7 @@ export default function ResourceAllocationApp() {
           Completed {stats.completed > 0 && `(${stats.completed})`}
         </button>
         <button style={tabStyle(view === "calendar")} onClick={() => setView("calendar")}>Calendar</button>
+        <button style={tabStyle(view === "export")} onClick={() => setView("export")}>Export to Excel</button>
       </div>
 
       <div style={{ padding: "22px 28px", maxWidth: 1000, margin: "0 auto" }}>
@@ -913,6 +916,47 @@ export default function ResourceAllocationApp() {
                 <button onClick={addProject} disabled={saving || !form.name.trim()}
                   style={{ background: saving ? C.muted : C.navy, color: "#fff", border: "none", padding: "10px 22px", borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer" }}>
                   {saving ? "Saving…" : "Add to Pipeline"}
+                </button>
+              </div>
+            )}
+
+            {view === "export" && (
+              <div style={card}>
+                <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 6 }}>Export Data to Excel</div>
+                <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
+                  Downloads a formatted <b>.xlsx</b> workbook with four sheets: <em>All Projects</em>, <em>Active Projects</em>,
+                  <em> Completed Projects</em>, and <em>Team Capacity</em>.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 24 }}>
+                  {[
+                    { label: "All Projects", desc: `${projects.length} rows · 19 columns · status-coloured` },
+                    { label: "Active Projects", desc: `${projects.filter(p => p.status !== "Completed").length} rows · timeline & assignee` },
+                    { label: "Completed Projects", desc: `${projects.filter(p => p.status === "Completed").length} rows · variance (est vs actual hrs)` },
+                    { label: "Team Capacity", desc: `${team.length} members · utilisation %` },
+                  ].map(({ label, desc }) => (
+                    <div key={label} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "12px 16px" }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: C.navy, marginBottom: 3 }}>{label}</div>
+                      <div style={{ fontSize: 12, color: C.muted }}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  disabled={exportLoading}
+                  onClick={async () => {
+                    setExportLoading(true);
+                    try {
+                      await exportToExcel({ projects, assignments, owners, team });
+                    } finally {
+                      setExportLoading(false);
+                    }
+                  }}
+                  style={{
+                    padding: "12px 28px", background: exportLoading ? C.muted : C.navy,
+                    color: "#fff", border: "none", borderRadius: 8, fontWeight: 700,
+                    fontSize: 14, cursor: exportLoading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {exportLoading ? "Generating…" : "⬇ Download Excel"}
                 </button>
               </div>
             )}
