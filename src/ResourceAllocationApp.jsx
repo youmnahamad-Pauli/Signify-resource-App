@@ -149,6 +149,7 @@ export default function ResourceAllocationApp() {
   const [expanded, setExpanded] = useState(null);
   const [completingId, setCompletingId] = useState(null);
   const [actualHrsInput, setActualHrsInput] = useState("");
+  const [pendingRebalance, setPendingRebalance] = useState(null);
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -371,13 +372,39 @@ export default function ResourceAllocationApp() {
               Suggested: move <b>{rebalance.project.name}</b> ({rebalance.project.hrs} h, non-iconic)
               to <b>{rebalance.suggestedTeam}</b>.
             </div>
-            <button
-              onClick={() => assignPerson(rebalance.project.id, rebalance.suggestedTeam, rebalance.person)}
-              style={{ background: "#F9A825", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-              Apply — move {rebalance.project.id} to {rebalance.suggestedTeam}
-            </button>
-            <div style={{ fontSize: 11, color: "#7B5E00", marginTop: 5 }}>
-              This frees {rebalance.hoursFreed} h from {rebalance.person}, making room for this iconic project.
+
+            {pendingRebalance?.projectId === rebalance.project.id ? (
+              /* Confirmation step */
+              <div style={{ background: "#FFF3CD", border: "1px solid #F9A825", borderRadius: 6, padding: "10px 12px" }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#7B5E00", marginBottom: 8 }}>
+                  Confirm: move <b>{rebalance.project.id} — {rebalance.project.name}</b> to <b>{rebalance.suggestedTeam}</b>?
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      await assignPerson(rebalance.project.id, rebalance.suggestedTeam, rebalance.person);
+                      setPendingRebalance(null);
+                    }}
+                    style={{ background: "#7B5E00", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                    Yes, apply rebalancing
+                  </button>
+                  <button
+                    onClick={() => setPendingRebalance(null)}
+                    style={{ background: "none", border: "1px solid #F9A825", borderRadius: 6, padding: "6px 14px", fontSize: 13, cursor: "pointer", color: "#7B5E00" }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setPendingRebalance({ projectId: rebalance.project.id })}
+                style={{ background: "#F9A825", color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                Suggest — move {rebalance.project.id} to {rebalance.suggestedTeam}
+              </button>
+            )}
+
+            <div style={{ fontSize: 11, color: "#7B5E00", marginTop: 6 }}>
+              This would free {rebalance.hoursFreed} h from {rebalance.person}, making room for this iconic project.
             </div>
           </div>
         )}
