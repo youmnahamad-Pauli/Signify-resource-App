@@ -186,14 +186,16 @@ export default function ResourceAllocationApp() {
   const stats = useMemo(() => {
     const active = scored.filter((p) => p.status !== "Completed");
     const completed = scored.filter((p) => p.status === "Completed");
-    const outsourced = active.filter((p) => isOutsourced(assignments[p.id]));
     const internal = active.filter((p) => !isOutsourced(assignments[p.id]));
+    const russian = active.filter((p) => assignments[p.id] === "Russian Outsourcing");
+    const turkish = active.filter((p) => assignments[p.id] === "Turkish LIAS");
     const totalEstimated = completed.reduce((a, p) => a + Number(p.hrs || 0), 0);
     const totalActual = completed.reduce((a, p) => a + Number(p.actual_hrs || 0), 0);
     return {
       open: active.length,
       internal: internal.length,
-      outsourced: outsourced.length,
+      russian: russian.length,
+      turkish: turkish.length,
       tier1: active.filter((p) => p.tier === 1).length,
       totalHrs: active.reduce((a, p) => a + Number(p.hrs || 0), 0),
       completed: completed.length,
@@ -271,6 +273,8 @@ export default function ResourceAllocationApp() {
   const activeProjects = scored.filter(p => p.status !== "Completed").sort((a, b) => b.raw - a.raw);
   const completedProjects = scored.filter(p => p.status === "Completed").sort((a, b) => b.raw - a.raw);
   const internalProjects = activeProjects.filter(p => !isOutsourced(assignments[p.id]));
+  const russianProjects = activeProjects.filter(p => assignments[p.id] === "Russian Outsourcing");
+  const turkishProjects = activeProjects.filter(p => assignments[p.id] === "Turkish LIAS");
   const outsourcedProjects = activeProjects.filter(p => isOutsourced(assignments[p.id]));
 
   function renderProjectCard(p, showOutsourceSection = false) {
@@ -457,12 +461,13 @@ export default function ResourceAllocationApp() {
             {view === "dashboard" && (
               <>
                 {/* Stats */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
                   {[
                     ["Active projects", stats.open],
                     ["Tier 1 — Critical", stats.tier1],
                     ["Internal team", stats.internal],
-                    ["Outsourced", stats.outsourced],
+                    ["Russian Outsourcing", stats.russian],
+                    ["Turkish LIAS", stats.turkish],
                   ].map(([k, v]) => (
                     <div key={k} style={{ ...card, padding: 14 }}>
                       <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>{k}</div>
@@ -485,16 +490,30 @@ export default function ResourceAllocationApp() {
                   )}
                 </div>
 
-                {/* Outsourced projects */}
-                <div style={card}>
-                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: OUTSOURCE_STYLE.color }}>
-                    Outsourced Projects ({outsourcedProjects.length})
+                {/* Russian Outsourcing projects */}
+                <div style={{ ...card, marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: OUTSOURCE_STYLE.color, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span>🇷🇺</span> Russian Outsourcing Team ({russianProjects.length})
                   </div>
-                  {outsourcedProjects.length === 0 ? (
-                    <div style={{ color: C.muted, textAlign: "center", padding: 30 }}>No outsourced projects yet.</div>
+                  {russianProjects.length === 0 ? (
+                    <div style={{ color: C.muted, textAlign: "center", padding: 30 }}>No projects assigned to Russian Outsourcing.</div>
                   ) : (
                     <div style={{ display: "grid", gap: 10 }}>
-                      {outsourcedProjects.map(p => renderProjectCard(p, true))}
+                      {russianProjects.map(p => renderProjectCard(p, true))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Turkish LIAS projects */}
+                <div style={card}>
+                  <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12, color: OUTSOURCE_STYLE.color, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span>🇹🇷</span> Turkish LIAS Team ({turkishProjects.length})
+                  </div>
+                  {turkishProjects.length === 0 ? (
+                    <div style={{ color: C.muted, textAlign: "center", padding: 30 }}>No projects assigned to Turkish LIAS.</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {turkishProjects.map(p => renderProjectCard(p, true))}
                     </div>
                   )}
                 </div>
