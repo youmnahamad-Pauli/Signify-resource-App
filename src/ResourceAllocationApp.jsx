@@ -369,13 +369,24 @@ export default function ResourceAllocationApp() {
           <span style={{ fontWeight: 700, color: p.color }}>{p.tierLabel} · score {p.raw}</span>
         </div>
 
-        {/* Date row */}
-        {(p.assigned_date || p.expected_delivery_date) && (
-          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12, color: C.muted }}>
-            {p.assigned_date && <span><span style={{ color: "#2E75B6", fontWeight: 600 }}>▶ Assigned:</span> {p.assigned_date}</span>}
-            {p.expected_delivery_date && <span><span style={{ color: "#854F0B", fontWeight: 600 }}>⏱ Expected delivery:</span> {p.expected_delivery_date}</span>}
-          </div>
-        )}
+        {/* Date tabs */}
+        <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[
+            { label: "Assigned Date",          value: p.assigned_date,          dot: "#2E75B6" },
+            { label: "Expected Delivery",       value: p.expected_delivery_date,  dot: "#854F0B" },
+            { label: "Actual Delivery",         value: p.actual_delivery_date,    dot: "#3B6D11" },
+          ].map(({ label, value, dot }) => (
+            <div key={label} style={{ display: "flex", flexDirection: "column", border: `1px solid ${C.line}`, borderRadius: 7, padding: "5px 10px", minWidth: 140, background: "#fff" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: dot, textTransform: "uppercase", letterSpacing: 0.5, display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: dot, display: "inline-block" }} />
+                {label}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: value ? C.ink : C.muted, marginTop: 2 }}>
+                {value || "—"}
+              </span>
+            </div>
+          ))}
+        </div>
 
         {/* Ownership row — read only, auto-set on assignment */}
         <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "7px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
