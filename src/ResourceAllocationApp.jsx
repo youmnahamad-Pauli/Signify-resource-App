@@ -251,15 +251,16 @@ export default function ResourceAllocationApp() {
   }
 
   async function assignPerson(projectId, assigneeName, recommendedOwner) {
-    // Owner = assignee for internal; top recommended team member for outsourced
-    const owner = isOutsourced(assigneeName) ? (recommendedOwner || null) : assigneeName;
+    const existingOwner = owners[projectId];
+    // Owner is locked once set — never overwritten on reassignment
+    const newOwner = existingOwner || (isOutsourced(assigneeName) ? (recommendedOwner || null) : assigneeName);
     setAssignments((prev) => ({ ...prev, [projectId]: assigneeName }));
-    setOwners((prev) => ({ ...prev, [projectId]: owner }));
+    if (!existingOwner && newOwner) setOwners((prev) => ({ ...prev, [projectId]: newOwner }));
     await supabase.from("assignments").upsert({ project_id: projectId, assignee: assigneeName });
-    const updates = { owner };
+    const updates = existingOwner ? {} : { owner: newOwner };
     const proj = projects.find(p => p.id === projectId);
     if (proj && proj.status === "Not Started") updates.status = "In Progress";
-    await supabase.from("projects").update(updates).eq("id", projectId);
+    if (Object.keys(updates).length > 0) await supabase.from("projects").update(updates).eq("id", projectId);
   }
 
   async function updateStatus(projectId, newStatus) {
