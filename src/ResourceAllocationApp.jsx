@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 import { exportToExcel } from "./exportToExcel";
+import { parseExcelFile } from "./importFromExcel";
 
 const URGENCY = {
   "Specification - Fast": 50,
@@ -156,6 +157,9 @@ export default function ResourceAllocationApp() {
   // overloadFlow: null | { step, newProjectId, newProjectName, newProjectHrs, targetPerson, theirProjects, pickedProjectId?, pickedProjectName?, newAssignee? }
   const [overloadFlow, setOverloadFlow] = useState(null);
   const [exportLoading, setExportLoading] = useState(false);
+  const [importPreview, setImportPreview] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState("");
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -661,7 +665,7 @@ export default function ResourceAllocationApp() {
           Completed {stats.completed > 0 && `(${stats.completed})`}
         </button>
         <button style={tabStyle(view === "calendar")} onClick={() => setView("calendar")}>Calendar</button>
-        <button style={tabStyle(view === "export")} onClick={() => setView("export")}>Export to Excel</button>
+        <button style={tabStyle(view === "export")} onClick={() => setView("export")}>Import / Export Excel</button>
       </div>
 
       <div style={{ padding: "22px 28px", maxWidth: 1000, margin: "0 auto" }}>
@@ -921,43 +925,151 @@ export default function ResourceAllocationApp() {
             )}
 
             {view === "export" && (
-              <div style={card}>
-                <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 6 }}>Export Data to Excel</div>
-                <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>
-                  Downloads a formatted <b>.xlsx</b> workbook with four sheets: <em>All Projects</em>, <em>Active Projects</em>,
-                  <em> Completed Projects</em>, and <em>Team Capacity</em>.
+              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+                {/* ── Export ── */}
+                <div style={card}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 6 }}>Export Data to Excel</div>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>
+                    Downloads a formatted <b>.xlsx</b> workbook with four sheets.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 10, marginBottom: 20 }}>
+                    {[
+                      { label: "All Projects",       desc: `${projects.length} rows · 19 columns · status-coloured` },
+                      { label: "Active Projects",     desc: `${projects.filter(p => p.status !== "Completed").length} rows · timeline & assignee` },
+                      { label: "Completed Projects",  desc: `${projects.filter(p => p.status === "Completed").length} rows · variance (est vs actual hrs)` },
+                      { label: "Team Capacity",       desc: `${team.length} members · utilisation %` },
+                    ].map(({ label, desc }) => (
+                      <div key={label} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "10px 14px" }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: C.navy, marginBottom: 2 }}>{label}</div>
+                        <div style={{ fontSize: 12, color: C.muted }}>{desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    disabled={exportLoading}
+                    onClick={async () => {
+                      setExportLoading(true);
+                      try { await exportToExcel({ projects, assignments, owners, team }); }
+                      finally { setExportLoading(false); }
+                    }}
+                    style={{ padding: "10px 24px", background: exportLoading ? C.muted : C.navy, color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: exportLoading ? "not-allowed" : "pointer" }}
+                  >
+                    {exportLoading ? "Generating…" : "⬇ Download Excel"}
+                  </button>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 24 }}>
-                  {[
-                    { label: "All Projects", desc: `${projects.length} rows · 19 columns · status-coloured` },
-                    { label: "Active Projects", desc: `${projects.filter(p => p.status !== "Completed").length} rows · timeline & assignee` },
-                    { label: "Completed Projects", desc: `${projects.filter(p => p.status === "Completed").length} rows · variance (est vs actual hrs)` },
-                    { label: "Team Capacity", desc: `${team.length} members · utilisation %` },
-                  ].map(({ label, desc }) => (
-                    <div key={label} style={{ border: `1px solid ${C.line}`, borderRadius: 8, padding: "12px 16px" }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, color: C.navy, marginBottom: 3 }}>{label}</div>
-                      <div style={{ fontSize: 12, color: C.muted }}>{desc}</div>
-                    </div>
-                  ))}
+
+                {/* ── Import ── */}
+                <div style={card}>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 6 }}>Import Projects from Excel</div>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>
+                    Upload any <b>.xlsx</b> file. The app reads the <em>All Projects</em> sheet (or first sheet) and maps
+                    columns: Project Name, Segment, Phase, Size, Complexity, Urgency, Iconic, Repetitive, Est. Hours, Status, dates.
+                    New projects are added without overwriting existing ones.
+                  </div>
+
+                  <label style={{ display: "inline-block", padding: "10px 20px", background: "#F0F4FF", border: `1px dashed ${C.navy}`, borderRadius: 8, cursor: "pointer", fontSize: 14, color: C.navy, fontWeight: 600, marginBottom: 12 }}>
+                    📂 Choose Excel file
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        setImportError("");
+                        setImportPreview(null);
+                        try {
+                          const rows = await parseExcelFile(file);
+                          if (rows.length === 0) { setImportError("No valid project rows found in the file."); return; }
+                          setImportPreview(rows);
+                        } catch {
+                          setImportError("Could not read the file. Make sure it is a valid .xlsx file.");
+                        }
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+
+                  {importError && (
+                    <div style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{importError}</div>
+                  )}
+
+                  {importPreview && (
+                    <>
+                      <div style={{ fontSize: 13, color: C.muted, marginBottom: 8 }}>
+                        <b style={{ color: C.navy }}>{importPreview.length} project{importPreview.length !== 1 ? "s" : ""}</b> found — review before importing:
+                      </div>
+                      <div style={{ overflowX: "auto", marginBottom: 16 }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: C.navy, color: "#fff" }}>
+                              {["Project Name","Segment","Phase","Size","Complexity","Urgency","Est. h","Status"].map(h => (
+                                <th key={h} style={{ padding: "6px 10px", textAlign: "left", whiteSpace: "nowrap" }}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importPreview.map((p, i) => (
+                              <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#F7F9FC" }}>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.name}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.segment}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.phase}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.size}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.complexity}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" }}>{p.urgency}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.hrs}</td>
+                                <td style={{ padding: "5px 10px", borderBottom: `1px solid ${C.line}` }}>{p.status || "Not Started"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          disabled={importLoading}
+                          onClick={async () => {
+                            setImportLoading(true);
+                            try {
+                              let nextNum = projects.length + 1;
+                              const rows = importPreview.map(p => ({
+                                id: "P-" + String(nextNum++).padStart(3, "0"),
+                                name: p.name,
+                                segment: p.segment || "Road",
+                                phase: p.phase || "Specification",
+                                size: p.size || "Medium",
+                                complexity: p.complexity || "Medium",
+                                urgency: p.urgency || "Specification - Normal",
+                                iconic: p.iconic || false,
+                                repetitive: p.repetitive || false,
+                                hrs: p.hrs || 0,
+                                actual_hrs: p.actual_hrs || null,
+                                status: p.status || "Not Started",
+                                assigned_date: p.assigned_date || null,
+                                expected_delivery_date: p.expected_delivery_date || null,
+                                actual_delivery_date: p.actual_delivery_date || null,
+                              }));
+                              const { error } = await supabase.from("projects").insert(rows);
+                              if (error) { setImportError("Import failed: " + error.message); }
+                              else { setImportPreview(null); setImportError(""); }
+                            } finally {
+                              setImportLoading(false);
+                            }
+                          }}
+                          style={{ padding: "10px 24px", background: importLoading ? C.muted : "#3B6D11", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: importLoading ? "not-allowed" : "pointer" }}
+                        >
+                          {importLoading ? "Importing…" : `✓ Import ${importPreview.length} project${importPreview.length !== 1 ? "s" : ""}`}
+                        </button>
+                        <button
+                          onClick={() => { setImportPreview(null); setImportError(""); }}
+                          style={{ padding: "10px 18px", background: "none", border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 14, cursor: "pointer", color: C.muted }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <button
-                  disabled={exportLoading}
-                  onClick={async () => {
-                    setExportLoading(true);
-                    try {
-                      await exportToExcel({ projects, assignments, owners, team });
-                    } finally {
-                      setExportLoading(false);
-                    }
-                  }}
-                  style={{
-                    padding: "12px 28px", background: exportLoading ? C.muted : C.navy,
-                    color: "#fff", border: "none", borderRadius: 8, fontWeight: 700,
-                    fontSize: 14, cursor: exportLoading ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {exportLoading ? "Generating…" : "⬇ Download Excel"}
-                </button>
               </div>
             )}
 
