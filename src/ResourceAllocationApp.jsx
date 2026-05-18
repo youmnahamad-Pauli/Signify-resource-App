@@ -541,12 +541,26 @@ export default function ResourceAllocationApp() {
                               <input type="number" style={inputStyle} value={editForm.base} onChange={(e) => setEditForm({ ...editForm, base: e.target.value })} />
                             </div>
                             <div>
-                              <label style={labelStyle}>Committed hours</label>
-                              <input type="number" style={inputStyle} value={editForm.committed} onChange={(e) => setEditForm({ ...editForm, committed: e.target.value })} />
+                              <label style={labelStyle}>Committed hours (max {editForm.base})</label>
+                              <input
+                                type="number"
+                                style={{ ...inputStyle, borderColor: Number(editForm.committed) > Number(editForm.base) ? "#A32D2D" : C.line }}
+                                value={editForm.committed}
+                                min={0}
+                                max={editForm.base}
+                                onChange={(e) => {
+                                  const val = Math.min(Math.max(0, Number(e.target.value)), Number(editForm.base));
+                                  setEditForm({ ...editForm, committed: val });
+                                }}
+                              />
+                              {Number(editForm.committed) > Number(editForm.base) && (
+                                <div style={{ fontSize: 11, color: "#A32D2D", marginTop: 3 }}>Cannot exceed base hours ({editForm.base} h)</div>
+                              )}
                             </div>
                             <div style={{ display: "flex", gap: 8, gridColumn: "span 2" }}>
                               <button onClick={() => saveEdit(t.name)}
-                                style={{ background: C.navy, color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px", fontSize: 13, cursor: "pointer", fontWeight: 600 }}>
+                                disabled={Number(editForm.committed) > Number(editForm.base)}
+                                style={{ background: Number(editForm.committed) > Number(editForm.base) ? C.muted : C.navy, color: "#fff", border: "none", borderRadius: 5, padding: "6px 16px", fontSize: 13, cursor: Number(editForm.committed) > Number(editForm.base) ? "not-allowed" : "pointer", fontWeight: 600 }}>
                                 Save
                               </button>
                               <button onClick={() => setEditingMember(null)}
