@@ -150,6 +150,7 @@ export default function ResourceAllocationApp() {
   const [completingId, setCompletingId] = useState(null);
   const [actualHrsInput, setActualHrsInput] = useState("");
   const [pendingRebalance, setPendingRebalance] = useState(null);
+  const [pendingOutsource, setPendingOutsource] = useState(null); // { projectId, team }
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -499,12 +500,55 @@ export default function ResourceAllocationApp() {
                   <div style={{ fontSize: 12, fontWeight: 600, color: OUTSOURCE_STYLE.color, marginBottom: 6 }}>Outsource to external team</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {OUTSOURCE_TEAMS.map(ot => (
-                      <button key={ot} onClick={() => assignPerson(p.id, ot, p.route.top?.name)}
-                        style={{ background: chosen === ot ? OUTSOURCE_STYLE.color : "transparent", color: chosen === ot ? "#fff" : OUTSOURCE_STYLE.color, border: `1px solid ${OUTSOURCE_STYLE.color}`, borderRadius: 5, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+                      <button key={ot}
+                        onClick={() => chosen === ot ? null : setPendingOutsource({ projectId: p.id, team: ot, suggestedOwner: p.route.top?.name })}
+                        style={{ background: chosen === ot ? OUTSOURCE_STYLE.color : "transparent", color: chosen === ot ? "#fff" : OUTSOURCE_STYLE.color, border: `1px solid ${OUTSOURCE_STYLE.color}`, borderRadius: 5, padding: "4px 12px", fontSize: 12, cursor: chosen === ot ? "default" : "pointer", fontWeight: 600 }}>
                         {chosen === ot ? `${ot} ✓` : ot}
                       </button>
                     ))}
                   </div>
+
+                  {/* Owner selection prompt for outsource assignment */}
+                  {pendingOutsource?.projectId === p.id && (
+                    <div style={{ marginTop: 10, background: "#fff", border: "1px solid #C9BCF0", borderRadius: 6, padding: "10px 12px" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#5B3FA0", marginBottom: 6 }}>
+                        Who will own and oversee this project internally?
+                      </div>
+                      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+                        Suggested: <b>{pendingOutsource.suggestedOwner || "—"}</b> (top recommendation)
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {TEAM_MEMBERS.map(m => (
+                          <button key={m}
+                            onClick={() => setPendingOutsource(prev => ({ ...prev, selectedOwner: m }))}
+                            style={{
+                              background: pendingOutsource.selectedOwner === m ? "#5B3FA0" : "#F8F6FD",
+                              color: pendingOutsource.selectedOwner === m ? "#fff" : "#5B3FA0",
+                              border: "1px solid #C9BCF0", borderRadius: 5, padding: "4px 12px",
+                              fontSize: 12, cursor: "pointer", fontWeight: 600,
+                            }}>
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          disabled={!pendingOutsource.selectedOwner}
+                          onClick={async () => {
+                            await assignPerson(pendingOutsource.projectId, pendingOutsource.team, pendingOutsource.selectedOwner);
+                            setPendingOutsource(null);
+                          }}
+                          style={{ background: pendingOutsource.selectedOwner ? "#5B3FA0" : C.muted, color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13, fontWeight: 700, cursor: pendingOutsource.selectedOwner ? "pointer" : "not-allowed" }}>
+                          Confirm assignment
+                        </button>
+                        <button onClick={() => setPendingOutsource(null)}
+                          style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "6px 14px", fontSize: 13, cursor: "pointer" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div style={{ fontSize: 11, color: C.muted, marginTop: 5 }}>
                     Suggested for this segment: <b style={{ color: OUTSOURCE_STYLE.color }}>{SEGMENT_OUTSOURCE[p.segment]}</b>
                   </div>
