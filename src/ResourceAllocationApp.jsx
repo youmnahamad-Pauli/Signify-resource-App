@@ -152,6 +152,8 @@ export default function ResourceAllocationApp() {
   const [pendingRebalance, setPendingRebalance] = useState(null);
   const [pendingOutsource, setPendingOutsource] = useState(null);
   const [calMonth, setCalMonth] = useState(() => { const d = new Date(); d.setDate(1); return d; });
+  // overloadFlow: null | { step, newProjectId, newProjectName, newProjectHrs, targetPerson, theirProjects, pickedProjectId?, pickedProjectName?, newAssignee? }
+  const [overloadFlow, setOverloadFlow] = useState(null);
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -281,6 +283,42 @@ export default function ResourceAllocationApp() {
     if (expectedDelivery) updates.expected_delivery_date = expectedDelivery;
     if (proj && proj.status === "Not Started") updates.status = "In Progress";
     await supabase.from("projects").update(updates).eq("id", projectId);
+  }
+
+  // Pre-check before assigning internally — detects overload and triggers the flow
+  function tryAssignPerson(projectId, assigneeName, recommendedOwner) {
+    const member = team.find(t => t.name === assigneeName);
+    if (!member || member.base === 0) return;
+    const proj = projects.find(p => p.id === projectId);
+    const liveCommitted = member.committed + (committedExtra[assigneeName] || 0);
+    const wouldExceed = liveCommitted + (proj?.hrs || 0) > member.base;
+    if (wouldExceed) {
+      const theirProjects = projects.filter(p =>
+        p.status !== "Completed" &&
+        assignments[p.id] === assigneeName &&
+        p.id !== projectId
+      );
+      setOverloadFlow({
+        step: "confirm",
+        newProjectId: projectId,
+        newProjectName: proj?.name,
+        newProjectHrs: proj?.hrs || 0,
+        targetPerson: assigneeName,
+        theirProjects,
+      });
+    } else {
+      assignPerson(projectId, assigneeName, recommendedOwner);
+    }
+  }
+
+  // Execute the final swap: reassign pickedProject to newAssignee, then assign newProject to targetPerson
+  async function executeRebalance() {
+    const { newProjectId, targetPerson, pickedProjectId, newAssignee } = overloadFlow;
+    // Reassign the picked project to the new assignee — ownership transfers
+    await assignPerson(pickedProjectId, newAssignee, newAssignee);
+    // Now assign the incoming project to the originally intended person
+    await assignPerson(newProjectId, targetPerson, targetPerson);
+    setOverloadFlow(null);
   }
 
   async function updateStatus(projectId, newStatus) {
@@ -524,7 +562,7 @@ export default function ResourceAllocationApp() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{r.reasons.join(" · ")}</div>
-                  <button onClick={() => assignPerson(p.id, r.name, p.route.top?.name)}
+                  <button onClick={() => tryAssignPerson(p.id, r.name, p.route.top?.name)}
                     style={{ marginTop: 5, background: chosen === r.name ? C.navy : "transparent", color: chosen === r.name ? "#fff" : C.navy, border: `1px solid ${C.navy}`, borderRadius: 5, padding: "3px 11px", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
                     {chosen === r.name ? "Assigned ✓" : "Assign"}
                   </button>
@@ -987,6 +1025,135 @@ export default function ResourceAllocationApp() {
       <div style={{ textAlign: "center", fontSize: 11, color: C.muted, marginTop: 10 }}>
         Prototype · transparent scoring engine — recommends, manager decides. Logic from the Signify workbook + strategy deck.
       </div>
+
+      {/* Overload modal */}
+      {overloadFlow && (() => {
+        const { step, newProjectName, newProjectHrs, targetPerson, theirProjects, pickedProjectId, pickedProjectName, newAssignee } = overloadFlow;
+        const overlay = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" };
+        const modal = { background: "#fff", borderRadius: 12, padding: 28, maxWidth: 560, width: "90%", boxShadow: "0 8px 40px rgba(0,0,0,0.18)" };
+
+        return (
+          <div style={overlay}>
+            <div style={modal}>
+              {step === "confirm" && (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: "#A32D2D", marginBottom: 8 }}>
+                    Overload detected
+                  </div>
+                  <div style={{ fontSize: 14, color: C.ink, marginBottom: 16 }}>
+                    <b>{targetPerson}</b> does not have enough capacity for <b>{newProjectName}</b> ({newProjectHrs} h).
+                    Do you want to reassign one of their current projects to free up space?
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      onClick={() => setOverloadFlow(f => ({ ...f, step: "pick-project" }))}
+                      style={{ background: C.navy, color: "#fff", border: "none", borderRadius: 6, padding: "8px 20px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                      Accept — reassign a project
+                    </button>
+                    <button
+                      onClick={() => setOverloadFlow(null)}
+                      style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 16px", fontSize: 14, cursor: "pointer", color: "#A32D2D", fontWeight: 600 }}>
+                      Refuse — assign to someone else
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {step === "pick-project" && (
+                <>
+                  <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 4 }}>
+                    Which project should be reassigned?
+                  </div>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+                    Select one of <b>{targetPerson}</b>'s active projects to move to someone else.
+                  </div>
+                  <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                    {theirProjects.length === 0 ? (
+                      <div style={{ color: C.muted, fontSize: 13 }}>No other active projects found for {targetPerson}.</div>
+                    ) : theirProjects.map(proj => (
+                      <div key={proj.id}
+                        onClick={() => setOverloadFlow(f => ({ ...f, pickedProjectId: proj.id, pickedProjectName: proj.name }))}
+                        style={{ border: `2px solid ${pickedProjectId === proj.id ? C.navy : C.line}`, borderRadius: 7, padding: "9px 12px", cursor: "pointer", background: pickedProjectId === proj.id ? "#EEF2F8" : "#fff" }}>
+                        <div style={{ fontWeight: 600 }}>{proj.id} — {proj.name}</div>
+                        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{proj.segment} · {proj.hrs} h est.</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      disabled={!pickedProjectId}
+                      onClick={() => setOverloadFlow(f => ({ ...f, step: "pick-assignee", newAssignee: null }))}
+                      style={{ background: pickedProjectId ? C.navy : C.muted, color: "#fff", border: "none", borderRadius: 6, padding: "8px 20px", fontSize: 14, fontWeight: 700, cursor: pickedProjectId ? "pointer" : "not-allowed" }}>
+                      Next — choose new assignee
+                    </button>
+                    <button onClick={() => setOverloadFlow(f => ({ ...f, step: "confirm" }))}
+                      style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {step === "pick-assignee" && (() => {
+                const pickedProj = projects.find(p => p.id === pickedProjectId);
+                const candidates = recommendPeople(pickedProj, team, committedExtra)
+                  .filter(r => r.name !== targetPerson);
+                return (
+                  <>
+                    <div style={{ fontWeight: 700, fontSize: 16, color: C.navy, marginBottom: 4 }}>
+                      Who should take over <span style={{ color: "#854F0B" }}>{pickedProjectName}</span>?
+                    </div>
+                    <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+                      Ownership will transfer to the new assignee. <b>{targetPerson}</b> will then take <b>{newProjectName}</b>.
+                    </div>
+                    <div style={{ display: "grid", gap: 7, marginBottom: 16 }}>
+                      {candidates.length === 0 ? (
+                        <div style={{ color: C.muted, fontSize: 13 }}>No eligible candidates found.</div>
+                      ) : candidates.map((r, i) => {
+                        const selected = newAssignee === r.name;
+                        const bc = r.total >= 70 ? "#3B6D11" : r.total >= 45 ? "#854F0B" : "#A32D2D";
+                        return (
+                          <div key={r.name}
+                            onClick={() => setOverloadFlow(f => ({ ...f, newAssignee: r.name }))}
+                            style={{ border: `2px solid ${selected ? C.navy : C.line}`, borderRadius: 7, padding: "8px 12px", cursor: "pointer", background: selected ? "#EEF2F8" : "#fff", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <div>
+                              <span style={{ fontWeight: 600 }}>{i + 1}. {r.name}</span>
+                              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>· {r.role}</span>
+                              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{r.reasons.join(" · ")}</div>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                              <span style={{ width: 70, height: 6, background: "#eee", borderRadius: 3, overflow: "hidden", display: "inline-block" }}>
+                                <span style={{ display: "block", width: r.total + "%", height: "100%", background: bc }} />
+                              </span>
+                              <b style={{ color: bc, fontSize: 13 }}>{r.total}</b>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button
+                        disabled={!newAssignee}
+                        onClick={executeRebalance}
+                        style={{ background: newAssignee ? "#3B6D11" : C.muted, color: "#fff", border: "none", borderRadius: 6, padding: "8px 20px", fontSize: 14, fontWeight: 700, cursor: newAssignee ? "pointer" : "not-allowed" }}>
+                        Confirm rebalancing
+                      </button>
+                      <button onClick={() => setOverloadFlow(f => ({ ...f, step: "pick-project", newAssignee: null }))}
+                        style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+                        Back
+                      </button>
+                      <button onClick={() => setOverloadFlow(null)}
+                        style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer", color: "#A32D2D" }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
