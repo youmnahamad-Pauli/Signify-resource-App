@@ -150,7 +150,8 @@ export default function ResourceAllocationApp() {
   const [completingId, setCompletingId] = useState(null);
   const [actualHrsInput, setActualHrsInput] = useState("");
   const [pendingRebalance, setPendingRebalance] = useState(null);
-  const [pendingOutsource, setPendingOutsource] = useState(null); // { projectId, team }
+  const [pendingOutsource, setPendingOutsource] = useState(null);
+  const [calMonth, setCalMonth] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [editingMember, setEditingMember] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [form, setForm] = useState({
@@ -253,13 +254,31 @@ export default function ResourceAllocationApp() {
   }
 
   async function assignPerson(projectId, assigneeName, recommendedOwner) {
-    // Owner = assignee for internal; top recommended team member for outsourced
     const owner = isOutsourced(assigneeName) ? (recommendedOwner || null) : assigneeName;
+    const today = new Date().toISOString().split("T")[0];
+
+    // Calculate expected delivery: hrs / available-hrs-per-week → weeks → date
+    let expectedDelivery = null;
+    if (!isOutsourced(assigneeName)) {
+      const member = team.find(t => t.name === assigneeName);
+      if (member && member.base > 0) {
+        const proj = projects.find(p => p.id === projectId);
+        const liveCommitted = member.committed + (committedExtra[assigneeName] || 0);
+        const availablePerWeek = Math.max(1, member.base - liveCommitted);
+        const weeksNeeded = Math.ceil((proj?.hrs || 1) / availablePerWeek);
+        const delivery = new Date();
+        delivery.setDate(delivery.getDate() + weeksNeeded * 7);
+        expectedDelivery = delivery.toISOString().split("T")[0];
+      }
+    }
+
     setAssignments((prev) => ({ ...prev, [projectId]: assigneeName }));
     setOwners((prev) => ({ ...prev, [projectId]: owner }));
     await supabase.from("assignments").upsert({ project_id: projectId, assignee: assigneeName });
-    const updates = { owner };
+
     const proj = projects.find(p => p.id === projectId);
+    const updates = { owner, assigned_date: today };
+    if (expectedDelivery) updates.expected_delivery_date = expectedDelivery;
     if (proj && proj.status === "Not Started") updates.status = "In Progress";
     await supabase.from("projects").update(updates).eq("id", projectId);
   }
@@ -276,7 +295,12 @@ export default function ResourceAllocationApp() {
   async function submitCompletion(projectId) {
     const actual = Number(actualHrsInput);
     if (!actual || actual <= 0) return;
-    await supabase.from("projects").update({ status: "Completed", actual_hrs: actual }).eq("id", projectId);
+    const today = new Date().toISOString().split("T")[0];
+    await supabase.from("projects").update({
+      status: "Completed",
+      actual_hrs: actual,
+      actual_delivery_date: today,
+    }).eq("id", projectId);
     setCompletingId(null);
     setActualHrsInput("");
   }
@@ -344,6 +368,14 @@ export default function ResourceAllocationApp() {
           <span style={{ fontWeight: 600 }}>Est. {p.hrs} h</span>
           <span style={{ fontWeight: 700, color: p.color }}>{p.tierLabel} · score {p.raw}</span>
         </div>
+
+        {/* Date row */}
+        {(p.assigned_date || p.expected_delivery_date) && (
+          <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 16, fontSize: 12, color: C.muted }}>
+            {p.assigned_date && <span><span style={{ color: "#2E75B6", fontWeight: 600 }}>▶ Assigned:</span> {p.assigned_date}</span>}
+            {p.expected_delivery_date && <span><span style={{ color: "#854F0B", fontWeight: 600 }}>⏱ Expected delivery:</span> {p.expected_delivery_date}</span>}
+          </div>
+        )}
 
         {/* Ownership row — read only, auto-set on assignment */}
         <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "7px 10px", background: "#F8F6FD", borderRadius: 6, border: "1px solid #E0D9F5" }}>
@@ -577,6 +609,7 @@ export default function ResourceAllocationApp() {
         <button style={tabStyle(view === "completed")} onClick={() => setView("completed")}>
           Completed {stats.completed > 0 && `(${stats.completed})`}
         </button>
+        <button style={tabStyle(view === "calendar")} onClick={() => setView("calendar")}>Calendar</button>
       </div>
 
       <div style={{ padding: "22px 28px", maxWidth: 1000, margin: "0 auto" }}>
@@ -688,6 +721,11 @@ export default function ResourceAllocationApp() {
                               {diff > 0 ? `+${diff} h over` : `${Math.abs(diff)} h under`} estimate
                             </span>
                           </div>
+                          <div style={{ marginTop: 6, display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: C.muted }}>
+                            {p.assigned_date && <span><span style={{ color: "#2E75B6", fontWeight: 600 }}>▶ Assigned:</span> {p.assigned_date}</span>}
+                            {p.expected_delivery_date && <span><span style={{ color: "#854F0B", fontWeight: 600 }}>⏱ Expected:</span> {p.expected_delivery_date}</span>}
+                            {p.actual_delivery_date && <span><span style={{ color: "#3B6D11", fontWeight: 600 }}>✓ Delivered:</span> {p.actual_delivery_date}</span>}
+                          </div>
                           <div style={{ marginTop: 6, height: 6, background: "#eee", borderRadius: 4, overflow: "hidden", maxWidth: 300 }}>
                             <div style={{ width: Math.min((p.actual_hrs / p.hrs) * 100, 150) + "%", height: "100%", background: diff > 0 ? "#A32D2D" : "#3B6D11" }} />
                           </div>
@@ -698,6 +736,89 @@ export default function ResourceAllocationApp() {
                 )}
               </div>
             )}
+
+            {view === "calendar" && (() => {
+              const year = calMonth.getFullYear();
+              const month = calMonth.getMonth();
+              const monthName = calMonth.toLocaleString("default", { month: "long", year: "numeric" });
+              const firstDay = new Date(year, month, 1).getDay();
+              const daysInMonth = new Date(year, month + 1, 0).getDate();
+              const todayStr = new Date().toISOString().split("T")[0];
+
+              // Build map: dateStr → list of events
+              const eventMap = {};
+              const addEvent = (dateStr, event) => {
+                if (!dateStr) return;
+                if (!eventMap[dateStr]) eventMap[dateStr] = [];
+                eventMap[dateStr].push(event);
+              };
+              for (const p of projects) {
+                const assignee = assignments[p.id];
+                const owner = owners[p.id];
+                if (p.assigned_date) addEvent(p.assigned_date, { type: "assigned", label: p.id, name: p.name, assignee, color: "#2E75B6" });
+                if (p.expected_delivery_date && p.status !== "Completed") addEvent(p.expected_delivery_date, { type: "expected", label: p.id, name: p.name, assignee: owner || assignee, color: "#854F0B" });
+                if (p.actual_delivery_date) addEvent(p.actual_delivery_date, { type: "actual", label: p.id, name: p.name, assignee: owner || assignee, color: "#3B6D11" });
+              }
+
+              const cells = [];
+              for (let i = 0; i < (firstDay === 0 ? 6 : firstDay - 1); i++) cells.push(null);
+              for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+              return (
+                <div style={card}>
+                  {/* Navigation */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                    <button onClick={() => setCalMonth(new Date(year, month - 1, 1))}
+                      style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "5px 14px", cursor: "pointer", fontSize: 16 }}>‹</button>
+                    <div style={{ fontWeight: 700, fontSize: 16, color: C.navy }}>{monthName}</div>
+                    <button onClick={() => setCalMonth(new Date(year, month + 1, 1))}
+                      style={{ background: "none", border: `1px solid ${C.line}`, borderRadius: 6, padding: "5px 14px", cursor: "pointer", fontSize: 16 }}>›</button>
+                  </div>
+
+                  {/* Legend */}
+                  <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 12 }}>
+                    {[["#2E75B6", "Date assigned"], ["#854F0B", "Expected delivery"], ["#3B6D11", "Actual delivery"]].map(([col, lbl]) => (
+                      <span key={lbl} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: col, display: "inline-block" }} />
+                        {lbl}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Day headers */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2, marginBottom: 2 }}>
+                    {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
+                      <div key={d} style={{ textAlign: "center", fontSize: 11, fontWeight: 600, color: C.muted, padding: "4px 0" }}>{d}</div>
+                    ))}
+                  </div>
+
+                  {/* Calendar grid */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
+                    {cells.map((day, i) => {
+                      if (!day) return <div key={`empty-${i}`} />;
+                      const dateStr = `${year}-${String(month + 1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                      const events = eventMap[dateStr] || [];
+                      const isToday = dateStr === todayStr;
+                      return (
+                        <div key={dateStr} style={{
+                          minHeight: 72, border: `1px solid ${isToday ? C.navy : C.line}`,
+                          borderRadius: 6, padding: "4px 5px",
+                          background: isToday ? "#EEF2F8" : "#fff",
+                        }}>
+                          <div style={{ fontSize: 12, fontWeight: isToday ? 700 : 400, color: isToday ? C.navy : C.ink, marginBottom: 2 }}>{day}</div>
+                          {events.map((ev, j) => (
+                            <div key={j} title={`${ev.name} — ${ev.type === "assigned" ? "Assigned" : ev.type === "expected" ? "Expected delivery" : "Delivered"}: ${ev.assignee || ""}`}
+                              style={{ fontSize: 10, background: ev.color + "22", color: ev.color, borderLeft: `3px solid ${ev.color}`, borderRadius: 3, padding: "1px 4px", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 600 }}>
+                              {ev.label} {ev.type === "assigned" ? "▶" : ev.type === "expected" ? "⏱" : "✓"}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {view === "intake" && (
               <div style={{ ...card, maxWidth: 640 }}>
